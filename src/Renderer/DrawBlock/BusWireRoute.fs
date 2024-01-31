@@ -125,79 +125,12 @@ let findWireSymbolIntersections (model: Model) (wire: Wire) : BoundingBox list =
 
 
 //------------------------------------------------------------------------//
-//--------------------------Shifting Vertical Segment---------------------//
+//--------------------------Shifting Segment------------------------------//
 //------------------------------------------------------------------------//
 
 let changeSegment (segIndex: int) (newLength: float) (segments: Segment list) =
     List.updateAt segIndex { segments[segIndex] with Length = newLength } segments
 
-/// Try shifting vertical seg to either - wireSeparationFromSymbol or + wireSeparationFromSymbol of intersected symbols.
-/// Returns None if no route found.
-let tryShiftVerticalSeg (model: Model) (intersectedBoxes: BoundingBox list) (wire: Wire) : Wire option =
-    let wireVertices =
-        segmentsToIssieVertices wire.Segments wire
-        |> List.map (fun (x, y, _) -> { X = x; Y = y })
-
-    let shiftVerticalSeg amountToShift =
-        let newSegments =
-            wire.Segments
-            |> List.updateAt 2 { wire.Segments[2] with Length = wire.Segments[2].Length + amountToShift }
-            |> List.updateAt 4 { wire.Segments[4] with Length = wire.Segments[4].Length - amountToShift }
-
-        { wire with Segments = newSegments }
-
-    let tryShiftWireVert (dir: DirectionToMove) =
-        let boundBox =
-            intersectedBoxes
-            |> List.sortWith (fun box1 box2 ->
-                let box1 = swapBB box1 wire.InitialOrientation
-                let box2 = swapBB box2 wire.InitialOrientation
-
-                match dir with
-                | Left_ -> compare (box1.TopLeft.X) (box2.TopLeft.X)
-                | Right_ -> compare (box2.TopLeft.X + box2.W) (box1.TopLeft.X + box1.W)
-                | _ -> failwith "Invalid direction to shift wire")
-            |> List.head
-
-
-        let viablePos =
-            match dir, wire.InitialOrientation with
-            | Left_, Horizontal ->
-                let initialAttemptPos = updatePos Left_ smallOffset boundBox.TopLeft
-                initialAttemptPos
-            | Right_, Horizontal ->
-                let initialAttemptPos =
-                    updatePos Right_ (boundBox.W + smallOffset) boundBox.TopLeft
-                initialAttemptPos
-            | Left_, Vertical ->
-                let initialAttemptPos = updatePos Up_ smallOffset boundBox.TopLeft
-                initialAttemptPos
-            | Right_, Vertical ->
-                let initialAttemptPos =
-                    updatePos Down_ (boundBox.H + smallOffset) boundBox.TopLeft
-                initialAttemptPos
-            | _ -> failwith "Invalid direction to shift wire"
-
-        let amountToShift =
-            (swapXY viablePos wire.InitialOrientation).X
-            - (swapXY wireVertices[4] wire.InitialOrientation).X
-
-        shiftVerticalSeg amountToShift
-
-    let tryShiftLeftWire = tryShiftWireVert Left_
-    let tryShiftRightWire = tryShiftWireVert Right_
-
-    let leftShiftedWireIntersections =
-        findWireSymbolIntersections model tryShiftLeftWire
-
-    let rightShiftedWireIntersections =
-        findWireSymbolIntersections model tryShiftRightWire
-
-    // Check which newly generated wire has no intersections, return that
-    match leftShiftedWireIntersections, rightShiftedWireIntersections with
-    | [], _ -> Some tryShiftLeftWire
-    | _, [] -> Some tryShiftRightWire
-    | _, _ ->  None
 
 //------------------------------------------------------------------------//
 //-------------------------Shifting Horizontal Segment--------------------//
@@ -378,6 +311,83 @@ let rec tryShiftHorizontalSeg
             | Some(Above _) -> tryShiftHorizontalSeg model downIntersections downShiftedWire
             | Some(Below _) -> tryShiftHorizontalSeg model upIntersections upShiftedWire)
 
+//------------------------------------------------------------------------//
+//--------------------------Shifting Vertical Segment---------------------//
+//------------------------------------------------------------------------//
+
+/// Try shifting vertical seg to either - wireSeparationFromSymbol or + wireSeparationFromSymbol of intersected symbols.
+/// Returns None if no route found.
+let tryShiftVerticalSeg (model: Model) (intersectedBoxes: BoundingBox list) (wire: Wire) : Wire option =
+    let wireVertices =
+        segmentsToIssieVertices wire.Segments wire
+        |> List.map (fun (x, y, _) -> { X = x; Y = y })
+
+    let shiftVerticalSeg amountToShift =
+        let newSegments =
+            wire.Segments
+            |> List.updateAt 2 { wire.Segments[2] with Length = wire.Segments[2].Length + amountToShift }
+            |> List.updateAt 4 { wire.Segments[4] with Length = wire.Segments[4].Length - amountToShift }
+
+        { wire with Segments = newSegments }
+
+    let tryShiftWireVert (dir: DirectionToMove) =
+        let boundBox =
+            intersectedBoxes
+            |> List.sortWith (fun box1 box2 ->
+                let box1 = swapBB box1 wire.InitialOrientation
+                let box2 = swapBB box2 wire.InitialOrientation
+
+                match dir with
+                | Left_ -> compare (box1.TopLeft.X) (box2.TopLeft.X)
+                | Right_ -> compare (box2.TopLeft.X + box2.W) (box1.TopLeft.X + box1.W)
+                | _ -> failwith "Invalid direction to shift wire")
+            |> List.head
+
+
+        let viablePos =
+            match dir, wire.InitialOrientation with
+            | Left_, Horizontal ->
+                let initialAttemptPos = updatePos Left_ smallOffset boundBox.TopLeft
+                initialAttemptPos
+            | Right_, Horizontal ->
+                let initialAttemptPos =
+                    updatePos Right_ (boundBox.W + smallOffset) boundBox.TopLeft
+                initialAttemptPos
+            | Left_, Vertical ->
+                let initialAttemptPos = updatePos Up_ smallOffset boundBox.TopLeft
+                initialAttemptPos
+            | Right_, Vertical ->
+                let initialAttemptPos =
+                    updatePos Down_ (boundBox.H + smallOffset) boundBox.TopLeft
+                initialAttemptPos
+            | _ -> failwith "Invalid direction to shift wire"
+
+        let amountToShift =
+            (swapXY viablePos wire.InitialOrientation).X
+            - (swapXY wireVertices[4] wire.InitialOrientation).X
+
+        shiftVerticalSeg amountToShift
+
+    let tryShiftLeftWire = tryShiftWireVert Left_
+    let tryShiftRightWire = tryShiftWireVert Right_
+
+    let leftShiftedWireIntersections =
+        findWireSymbolIntersections model tryShiftLeftWire
+
+    let rightShiftedWireIntersections =
+        findWireSymbolIntersections model tryShiftRightWire
+
+    // Check which newly generated wire has no intersections, return that
+    match leftShiftedWireIntersections, rightShiftedWireIntersections with
+    | [], _ -> Some tryShiftLeftWire
+    | _, [] -> Some tryShiftRightWire
+    | _, _ ->  
+        let tryShiftHoriAfterShiftLeftWire = tryShiftHorizontalSeg maxCallsToShiftHorizontalSeg model leftShiftedWireIntersections tryShiftLeftWire
+        let tryShiftHoriAfterShiftRightWire = tryShiftHorizontalSeg maxCallsToShiftHorizontalSeg model rightShiftedWireIntersections tryShiftRightWire
+        match tryShiftHoriAfterShiftLeftWire, tryShiftHoriAfterShiftRightWire with
+        | Some _, _ -> tryShiftHoriAfterShiftLeftWire
+        | None, Some _ -> tryShiftHoriAfterShiftRightWire
+        | None, None -> None
 
 
 //------------------------------------------------------------------------//

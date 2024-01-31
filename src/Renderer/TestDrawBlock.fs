@@ -236,12 +236,91 @@ module HLPTick3 =
         
 
         // Rotate a symbol
-        let rotateSymbol (symLabel: string) (rotate: Rotation) (model: SheetT.Model) : (SheetT.Model) =
-            failwithf "Not Implemented"
+        let rotateSymbol (symLabel: ComponentId) (rotate: Rotation) (model: SheetT.Model) : (SheetT.Model) =
+            // SymbolUpdate.update (RotateAntiClockAng [symLabel] rotate) model     // alt. approach
+            let rotmodel = 
+                {model with Wire = {model.Wire with Symbol = (RotateScale.rotateBlock [symLabel] model.Wire.Symbol rotate)}}
+            rotmodel
 
         // Flip a symbol
-        let flipSymbol (symLabel: string) (flip: SymbolT.FlipType) (model: SheetT.Model) : (SheetT.Model) =
-            failwithf "Not Implemented"
+        let flipSymbol (symLabel: ComponentId) (flip: SymbolT.FlipType) (model: SheetT.Model) : (SheetT.Model) =
+            // let flipsym = fst (SymbolUpdate.update (SymbolT.Msg.Flip ([symLabel],flip)) model.Wire.Symbol)   
+            // the above alt. approach fails the FlipVertical case
+            // because of a bug in SymbolResizeHelpers/adjustPosForRotation & flipSymbol (line 144)
+
+            let flipsym = RotateScale.flipBlock [symLabel] model.Wire.Symbol flip
+            let flipmodel = 
+                {model with Wire = {model.Wire with Symbol = flipsym}}
+            flipmodel
+
+        // following function merged into "placeTransformedSymbol"
+        let placeFlippedSymbol (symLabel: string) (compType: ComponentType) (position: XYPos) (model: SheetT.Model) : Result<SheetT.Model, string> =
+            let symLabel = String.toUpper symLabel // make label into its standard casing
+            let symModel, symId = SymbolUpdate.addSymbol [] (model.Wire.Symbol) position compType symLabel
+            let sym = symModel.Symbols[symId]
+            let flipTypes = [|SymbolT.FlipHorizontal; SymbolT.FlipVertical|]
+            // randomly select a flip:
+            let flip = 
+                match toList (randomInt 0 1 1) with
+                | hd :: tl -> flipTypes[hd]
+                | [] -> flipTypes[0]        // should not happen
+
+            match position + sym.getScaledDiagonal with
+            | {X=x;Y=y} when x > maxSheetCoord || y > maxSheetCoord ->
+                Error $"symbol '{symLabel}' position {position + sym.getScaledDiagonal} lies outside allowed coordinates"
+            | _ ->
+                model
+                |> Optic.set symbolModel_ symModel
+                |> SheetUpdate.updateBoundingBoxes // could optimise this by only updating symId bounding boxes
+                |> flipSymbol symId flip
+                |> Ok
+        
+        // following function merged into "placeTransformedSymbol"
+        let placeRotatedSymbol (symLabel: string) (compType: ComponentType) (position: XYPos) (model: SheetT.Model) : Result<SheetT.Model, string> =
+            let symLabel = String.toUpper symLabel // make label into its standard casing
+            let symModel, symId = SymbolUpdate.addSymbol [] (model.Wire.Symbol) position compType symLabel
+            let sym = symModel.Symbols[symId]
+            let rotationTypes = [|Degree0; Degree90; Degree180; Degree270|]
+            // randomly select a rotation:
+            let rotate = 
+                match toList (randomInt 0 1 3) with
+                | hd :: tl -> rotationTypes[hd]
+                | [] -> rotationTypes[0]        // should not happen
+
+            match position + sym.getScaledDiagonal with
+            | {X=x;Y=y} when x > maxSheetCoord || y > maxSheetCoord ->
+                Error $"symbol '{symLabel}' position {position + sym.getScaledDiagonal} lies outside allowed coordinates"
+            | _ ->
+                model
+                |> Optic.set symbolModel_ symModel
+                |> SheetUpdate.updateBoundingBoxes // could optimise this by only updating symId bounding boxes
+                |> rotateSymbol symId rotate
+                |> Ok
+
+        let placeTransformedSymbol (symLabel: string) (compType: ComponentType) (position: XYPos) (model: SheetT.Model) : Result<SheetT.Model, string> =
+            let symLabel = String.toUpper symLabel // make label into its standard casing
+            let symModel, symId = SymbolUpdate.addSymbol [] (model.Wire.Symbol) position compType symLabel
+            let sym = symModel.Symbols[symId]
+
+            let rotationTypes = [|Degree0; Degree90; Degree180; Degree270|]
+            let flipTypes = [|SymbolT.FlipHorizontal;SymbolT.FlipVertical|]
+            // randomly select a transformation to the symbol:
+            let transform = 
+                match toList (randomInt 0 1 5) with
+                | hd :: tl when hd<4 -> rotateSymbol symId rotationTypes[hd]
+                | hd :: tl -> flipSymbol symId flipTypes[hd-4]
+                | [] -> rotateSymbol symId rotationTypes[0]      // should not happen
+
+            match position + sym.getScaledDiagonal with
+            | {X=x;Y=y} when x > maxSheetCoord || y > maxSheetCoord ->
+                Error $"symbol '{symLabel}' position {position + sym.getScaledDiagonal} lies outside allowed coordinates"
+            | _ ->
+                model
+                |> Optic.set symbolModel_ symModel
+                |> SheetUpdate.updateBoundingBoxes // could optimise this by only updating symId bounding boxes
+                |> transform
+                |> SheetUpdate.updateBoundingBoxes  // not sure if needed
+                |> Ok
 
         /// Add a (newly routed) wire, source specifies the Output port, target the Input port.
         /// Return an error if either of the two ports specified is invalid, or if the wire duplicates and existing one.
@@ -329,6 +408,32 @@ module HLPTick3 =
         fromList [-100..20..100]
         |> map (fun n -> middleOfSheet + {X=float n; Y=0.})
 
+    let gridPositions= 
+        let oneAxis = fromList [-100..18..100]
+        let centrePos = middleOfSheet       // set position of the centre component
+        // product (fun x y -> centrePos + {X=float x; Y=float y} ) oneAxis oneAxis     
+        /// "product" does not provide ALL possible combinations of coordinates.
+        /// To test the entire 2D grid:
+        let allComb y =  
+            map (fun x -> centrePos + {X=float x; Y=float y} ) oneAxis
+        [-100..18..100]
+        |> List.collect (fun y -> toList (allComb y)) 
+        |> fromList
+        
+    let filterNonOverlap symbol1 symbol2 =
+        let pos1 = middleOfSheet
+        let posList = gridPositions
+        let getHeightWidth symbol = 
+            match (Symbol.getComponentProperties symbol "") with
+            | (_,_,h,w) -> (h,w)
+        let getTopLeftBottomRight symbol centrePos = 
+            let h,w = getHeightWidth symbol
+            let topLeftPos = centrePos - {X=w/2.0; Y=h/2.0}
+            let bottomRightPos = centrePos + {X=w/2.0; Y=h/2.0}
+            (topLeftPos, bottomRightPos)
+        posList
+        |> filter (fun pos2 -> not (BlockHelpers.overlap2D (getTopLeftBottomRight symbol1 pos1) (getTopLeftBottomRight symbol2 pos2)))
+
     /// demo test circuit consisting of a DFF & And gate
     let makeTest1Circuit (andPos:XYPos) =
         initSheetModel
@@ -338,7 +443,23 @@ module HLPTick3 =
         |> Result.bind (placeWire (portOf "FF1" 0) (portOf "G1" 0) )
         |> getOkOrFail
 
+    let makeTest5Circuit (dffPos:XYPos) =
+        initSheetModel
+        |> placeSymbol "G1" (GateN(And,2)) middleOfSheet
+        |> Result.bind (placeSymbol "FF1" DFF dffPos)
+        |> Result.bind (placeWire (portOf "G1" 0) (portOf "FF1" 0))
+        |> Result.bind (placeWire (portOf "FF1" 0) (portOf "G1" 0) )
+        |> getOkOrFail
 
+    let makeTest6Circuit (dffPos:XYPos) =
+        initSheetModel
+        |> placeSymbol "G1" (GateN(And,2)) middleOfSheet
+        // |> Result.bind (placeFlippedSymbol "FF1" DFF dffPos)  // test flipped
+        // |> Result.bind (placeRotatedSymbol "FF1" DFF dffPos)   // test rotated
+        |> Result.bind (placeTransformedSymbol "FF1" DFF dffPos)
+        |> Result.bind (placeWire (portOf "G1" 0) (portOf "FF1" 0))
+        |> Result.bind (placeWire (portOf "FF1" 0) (portOf "G1" 0) )
+        |> getOkOrFail
 
 //------------------------------------------------------------------------------------------------//
 //-------------------------Example assertions used to test sheets---------------------------------//
@@ -446,6 +567,28 @@ module HLPTick3 =
                 dispatch
             |> recordPositionInTest testNum dispatch
 
+        let test5 testNum firstSample dispatch =
+            runTestOnSheets
+                "Horizontally positioned AND + DFF: fail on wire intersects symbol"
+                firstSample
+                (filterNonOverlap (GateN(And,2)) DFF)
+                // gridPositions    // (not filtering the overlapping components)
+                makeTest5Circuit
+                Asserts.failOnWireIntersectsSymbol
+                dispatch
+            |> recordPositionInTest testNum dispatch
+        
+        let test6 testNum firstSample dispatch =
+            runTestOnSheets
+                "Horizontally positioned AND + DFF: fail on wire intersects symbol"
+                firstSample
+                (filterNonOverlap (GateN(And,2)) DFF)
+                // gridPositions    // (not filtering the overlapping components)
+                makeTest6Circuit
+                Asserts.failOnWireIntersectsSymbol
+                dispatch
+            |> recordPositionInTest testNum dispatch
+
         /// List of tests available which can be run ftom Issie File Menu.
         /// The first 9 tests can also be run via Ctrl-n accelerator keys as shown on menu
         let testsToRunFromSheetMenu : (string * (int -> int -> Dispatch<Msg> -> Unit)) list =
@@ -456,8 +599,8 @@ module HLPTick3 =
                 "Test2", test2 // example
                 "Test3", test3 // example
                 "Test4", test4 
-                "Test5", fun _ _ _ -> printf "Test5" // dummy test - delete line or replace by real test as needed
-                "Test6", fun _ _ _ -> printf "Test6"
+                "Test5", test5  // test automatic wire routing with 2D grid
+                "Test6", test6  // test as above but with rotation and flip
                 "Test7", fun _ _ _ -> printf "Test7"
                 "Test8", fun _ _ _ -> printf "Test8"
                 "Next Test Error", fun _ _ _ -> printf "Next Error:" // Go to the nexterror in a test
