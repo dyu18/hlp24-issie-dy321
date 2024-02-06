@@ -233,94 +233,57 @@ module HLPTick3 =
                     }
                 placeSymbol symLabel (Custom ccType) position model
             
-        
+        let getSymbolfromLabel (symLabel: string) (model: SheetT.Model) = 
+            mapValues model.Wire.Symbol.Symbols
+            |> Array.find (fun sym -> caseInvariantEqual sym.Component.Label symLabel)
 
         // Rotate a symbol
-        let rotateSymbol (symLabel: ComponentId) (rotate: Rotation) (model: SheetT.Model) : (SheetT.Model) =
-            // SymbolUpdate.update (RotateAntiClockAng [symLabel] rotate) model     // alt. approach
+        let rotateSymbol (symLabel: string) (rotate: Rotation) (model: SheetT.Model) : (SheetT.Model) =
+            let sym = getSymbolfromLabel symLabel model
             let rotmodel = 
-                {model with Wire = {model.Wire with Symbol = (RotateScale.rotateBlock [symLabel] model.Wire.Symbol rotate)}}
+                {model with Wire = {model.Wire with Symbol = (RotateScale.rotateBlock [sym.Id] model.Wire.Symbol rotate)}}
             rotmodel
 
-        // Flip a symbol
-        let flipSymbol (symLabel: ComponentId) (flip: SymbolT.FlipType) (model: SheetT.Model) : (SheetT.Model) =
-            // let flipsym = fst (SymbolUpdate.update (SymbolT.Msg.Flip ([symLabel],flip)) model.Wire.Symbol)   
-            // the above alt. approach fails the FlipVertical case
-            // because of a bug in SymbolResizeHelpers/adjustPosForRotation & flipSymbol (line 144)
+            // alternative approach: 
+            // but doesn't work on Rotation.Degree0, Rotation.Degree180, due to a bug in SymbolResizeHelpers/adjustPosForRotation
+        let rotateSymbol' (symLabel: string) (rotate: Rotation) (model: SheetT.Model) : (SheetT.Model) =
+            let sym = getSymbolfromLabel symLabel model 
+            let newSym = SymbolResizeHelpers.rotateSymbol rotate sym
+            let newSymbolsMap = Map.add sym.Id newSym model.Wire.Symbol.Symbols
+            let rotmodel = 
+                {model with Wire = {model.Wire with Symbol = {model.Wire.Symbol with Symbols = newSymbolsMap}}}
+            rotmodel 
 
-            let flipsym = RotateScale.flipBlock [symLabel] model.Wire.Symbol flip
+        // Flip a symbol
+        let flipSymbol (symLabel: string) (flip: SymbolT.FlipType) (model: SheetT.Model) : (SheetT.Model) =
+            let sym = getSymbolfromLabel symLabel model
+            let flipsym = RotateScale.flipBlock [sym.Id] model.Wire.Symbol flip
             let flipmodel = 
                 {model with Wire = {model.Wire with Symbol = flipsym}}
             flipmodel
 
-        // following function merged into "placeTransformedSymbol"
-        let placeFlippedSymbol (symLabel: string) (compType: ComponentType) (position: XYPos) (model: SheetT.Model) : Result<SheetT.Model, string> =
-            let symLabel = String.toUpper symLabel // make label into its standard casing
-            let symModel, symId = SymbolUpdate.addSymbol [] (model.Wire.Symbol) position compType symLabel
-            let sym = symModel.Symbols[symId]
-            let flipTypes = [|SymbolT.FlipHorizontal; SymbolT.FlipVertical|]
-            // randomly select a flip:
-            let flip = 
-                match toList (randomInt 0 1 1) with
-                | hd :: tl -> flipTypes[hd]
-                | [] -> flipTypes[0]        // should not happen
+            // alternative approach: 
+            // but doesn't work on SymbolT.FlipVertical, due to a bug in SymbolResizeHelpers/adjustPosForRotation
+        let flipSymbol' (symLabel: string) (flip: SymbolT.FlipType) (model: SheetT.Model) : (SheetT.Model) =
+            let sym = getSymbolfromLabel symLabel model 
+            let newSym = SymbolResizeHelpers.flipSymbol flip sym
+            let newSymbolsMap = Map.add sym.Id newSym model.Wire.Symbol.Symbols
+            let flipmodel = 
+                {model with Wire = {model.Wire with Symbol = {model.Wire.Symbol with Symbols = newSymbolsMap}}}
+            flipmodel
 
-            match position + sym.getScaledDiagonal with
-            | {X=x;Y=y} when x > maxSheetCoord || y > maxSheetCoord ->
-                Error $"symbol '{symLabel}' position {position + sym.getScaledDiagonal} lies outside allowed coordinates"
-            | _ ->
-                model
-                |> Optic.set symbolModel_ symModel
-                |> SheetUpdate.updateBoundingBoxes // could optimise this by only updating symId bounding boxes
-                |> flipSymbol symId flip
-                |> Ok
-        
-        // following function merged into "placeTransformedSymbol"
-        let placeRotatedSymbol (symLabel: string) (compType: ComponentType) (position: XYPos) (model: SheetT.Model) : Result<SheetT.Model, string> =
-            let symLabel = String.toUpper symLabel // make label into its standard casing
-            let symModel, symId = SymbolUpdate.addSymbol [] (model.Wire.Symbol) position compType symLabel
-            let sym = symModel.Symbols[symId]
-            let rotationTypes = [|Degree0; Degree90; Degree180; Degree270|]
-            // randomly select a rotation:
-            let rotate = 
-                match toList (randomInt 0 1 3) with
-                | hd :: tl -> rotationTypes[hd]
-                | [] -> rotationTypes[0]        // should not happen
-
-            match position + sym.getScaledDiagonal with
-            | {X=x;Y=y} when x > maxSheetCoord || y > maxSheetCoord ->
-                Error $"symbol '{symLabel}' position {position + sym.getScaledDiagonal} lies outside allowed coordinates"
-            | _ ->
-                model
-                |> Optic.set symbolModel_ symModel
-                |> SheetUpdate.updateBoundingBoxes // could optimise this by only updating symId bounding boxes
-                |> rotateSymbol symId rotate
-                |> Ok
-
-        let placeTransformedSymbol (symLabel: string) (compType: ComponentType) (position: XYPos) (model: SheetT.Model) : Result<SheetT.Model, string> =
-            let symLabel = String.toUpper symLabel // make label into its standard casing
-            let symModel, symId = SymbolUpdate.addSymbol [] (model.Wire.Symbol) position compType symLabel
-            let sym = symModel.Symbols[symId]
-
+        let randomRotateOrFlip (symLabel: string) (model: SheetT.Model) : Result<SheetT.Model,string> =
             let rotationTypes = [|Degree0; Degree90; Degree180; Degree270|]
             let flipTypes = [|SymbolT.FlipHorizontal;SymbolT.FlipVertical|]
+
             // randomly select a transformation to the symbol:
             let transform = 
                 match toList (randomInt 0 1 5) with
-                | hd :: tl when hd<4 -> rotateSymbol symId rotationTypes[hd]
-                | hd :: tl -> flipSymbol symId flipTypes[hd-4]
-                | [] -> rotateSymbol symId rotationTypes[0]      // should not happen
+                | hd :: tl when hd<4 -> rotateSymbol symLabel rotationTypes[hd]
+                | hd :: tl -> flipSymbol symLabel flipTypes[hd-4]
+                | [] -> rotateSymbol symLabel rotationTypes[0]     // should not happen
 
-            match position + sym.getScaledDiagonal with
-            | {X=x;Y=y} when x > maxSheetCoord || y > maxSheetCoord ->
-                Error $"symbol '{symLabel}' position {position + sym.getScaledDiagonal} lies outside allowed coordinates"
-            | _ ->
-                model
-                |> Optic.set symbolModel_ symModel
-                |> SheetUpdate.updateBoundingBoxes // could optimise this by only updating symId bounding boxes
-                |> transform
-                |> SheetUpdate.updateBoundingBoxes  // not sure if needed
-                |> Ok
+            Ok (transform model)
 
         /// Add a (newly routed) wire, source specifies the Output port, target the Input port.
         /// Return an error if either of the two ports specified is invalid, or if the wire duplicates and existing one.
@@ -451,12 +414,11 @@ module HLPTick3 =
         |> Result.bind (placeWire (portOf "FF1" 0) (portOf "G1" 0) )
         |> getOkOrFail
 
-    let makeTest6Circuit (dffPos:XYPos) =
+    let makeTest7Circuit (dffPos:XYPos) =
         initSheetModel
         |> placeSymbol "G1" (GateN(And,2)) middleOfSheet
-        // |> Result.bind (placeFlippedSymbol "FF1" DFF dffPos)  // test flipped
-        // |> Result.bind (placeRotatedSymbol "FF1" DFF dffPos)   // test rotated
-        |> Result.bind (placeTransformedSymbol "FF1" DFF dffPos)
+        |> Result.bind (placeSymbol "FF1" DFF dffPos)
+        |> Result.bind (randomRotateOrFlip "FF1")
         |> Result.bind (placeWire (portOf "G1" 0) (portOf "FF1" 0))
         |> Result.bind (placeWire (portOf "FF1" 0) (portOf "G1" 0) )
         |> getOkOrFail
@@ -578,13 +540,13 @@ module HLPTick3 =
                 dispatch
             |> recordPositionInTest testNum dispatch
         
-        let test6 testNum firstSample dispatch =
+        let test7 testNum firstSample dispatch =
             runTestOnSheets
                 "Horizontally positioned AND + DFF: fail on wire intersects symbol"
                 firstSample
                 (filterNonOverlap (GateN(And,2)) DFF)
                 // gridPositions    // (not filtering the overlapping components)
-                makeTest6Circuit
+                makeTest7Circuit
                 Asserts.failOnWireIntersectsSymbol
                 dispatch
             |> recordPositionInTest testNum dispatch
@@ -600,8 +562,8 @@ module HLPTick3 =
                 "Test3", test3 // example
                 "Test4", test4 
                 "Test5", test5  // test automatic wire routing with 2D grid
-                "Test6", test6  // test as above but with rotation and flip
-                "Test7", fun _ _ _ -> printf "Test7"
+                "Test6", fun _ _ _ -> printf "Test6 used to test automatic wire routing with 2D grid by placing rotated or flipped components"
+                "Test7", test7  // test automatic wire routing with 2D grid and perform random rotation and flip on already-placed components (less repetition of code)
                 "Test8", fun _ _ _ -> printf "Test8"
                 "Next Test Error", fun _ _ _ -> printf "Next Error:" // Go to the nexterror in a test
 
